@@ -18,7 +18,17 @@
         "command": "code-whisperer-voice.explainSelectedCodeVoice",
         "title": "Explain Selected Code (Voice Mode)"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "Code Whisperer Voice",
+      "properties": {
+        "codeWhispererVoice.openaiApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "OpenAI API key for code explanation generation"
+        }
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "tsc -p ./",
