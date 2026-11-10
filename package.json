@@ -149,7 +149,7 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile",
-    "test": "node --test out/test/*.test.js",
+    "test": "node scripts/run-tests.js",
     "package": "vsce package"
   },
   "devDependencies": {
