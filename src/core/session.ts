@@ -1,6 +1,6 @@
 import { buildExplainPrompt, SAFETY_NOTE, SPOKEN_STYLE, VibeMode, voiceCommands } from './prompts';
 import { detectCommand, parseControl } from './router';
-import { Depth, proofLabel, proofSpoken, StoryStep, stepText, Trail, trailSummary } from './crumbs';
+import { basisLabel, basisSpoken, buildWalkthroughPrompt, Depth, parseWalkthrough, stepText, Walkthrough } from './walkthrough';
 
 export interface Reply {
     text: string;
@@ -16,34 +16,33 @@ export interface CodeView {
     lines: string[];
     /** Absolute 1-based line numbers to emphasise. */
     highlight: number[];
-    pointer?: string;
 }
 
 export interface PanelState {
-    mode: 'explain' | 'trail';
+    mode: 'explain' | 'walkthrough';
     title: string;
     badge: string;
     codeLabel: string;
     code: CodeView | null;
-    step: { index: number; total: number; title: string; chapter: string; proof: string } | null;
+    step: { index: number; total: number; title: string; basis: string } | null;
     commands: Array<{ icon: string; label: string; example: string }> | null;
     placeholder: string;
 }
 
 export interface Location {
-    file: string;
+    /** Absolute 1-based line numbers in the document the code was selected from. */
     start: number;
     end: number;
 }
 
 export interface SessionDeps {
     complete(system: string, user: string): Promise<string>;
-    /** Called when a trail step wants an editor to jump to some code. */
+    /** Called when a walkthrough step wants the editor to highlight some lines. */
     reveal?(loc: Location): void;
 }
 
 export interface Session {
-    readonly mode: 'explain' | 'trail';
+    readonly mode: 'explain' | 'walkthrough';
     snapshot(): PanelState;
     /** Optional opening narration, spoken when the panel opens. */
     start?(): Reply | undefined;
@@ -52,21 +51,21 @@ export interface Session {
 
 const MAX_PREVIEW_LINES = 200;
 
-export interface ExplainOptions {
+export interface CodeOptions {
     code: string;
     language?: string;
     /** Workspace-relative path, used in prompts and the panel header. */
     fileLabel?: string;
+    /** 1-based line of the first selected line in its document. */
     startLine?: number;
     vibe: VibeMode;
-    trailContext?: string;
 }
 
 /** "Explain / optimise / find bugs in this selection" by voice or text. */
 export class ExplainSession implements Session {
     readonly mode = 'explain' as const;
 
-    constructor(private readonly deps: SessionDeps, private readonly opts: ExplainOptions) {}
+    constructor(private readonly deps: SessionDeps, private readonly opts: CodeOptions) {}
 
     snapshot(): PanelState {
         const lines = this.opts.code.split('\n').slice(0, MAX_PREVIEW_LINES);
@@ -90,61 +89,69 @@ export class ExplainSession implements Session {
             utterance,
             code: this.opts.code,
             language: this.opts.language,
-            fileLabel: this.opts.fileLabel,
-            trailContext: this.opts.trailContext
+            fileLabel: this.opts.fileLabel
         });
         const text = await this.deps.complete(system, user);
         return { text, action: command.label };
     }
 }
 
-export interface TrailOptions {
-    vibe: VibeMode;
+export interface WalkOptions extends CodeOptions {
     depth: Depth;
 }
 
 /**
- * Spoken walkthrough of a crumbs trail: "next", "back", "simpler", "deeper", "repeat", "stop",
- * or any free question about the step you're on.
+ * Spoken, step-by-step tour of the selected code: "next", "back", "simpler", "deeper", "repeat",
+ * "stop", or any question about the step you're on.
  */
-export class TrailSession implements Session {
-    readonly mode = 'trail' as const;
-    private index = -1; // -1 = introduction
+export class WalkthroughSession implements Session {
+    readonly mode = 'walkthrough' as const;
+    private index = -1; // -1 = overview
     private depth: Depth;
-    private readonly steps: StoryStep[];
 
-    constructor(private readonly deps: SessionDeps, private readonly trail: Trail, private readonly opts: TrailOptions) {
+    private constructor(
+        private readonly deps: SessionDeps,
+        private readonly opts: WalkOptions,
+        private readonly plan: Walkthrough
+    ) {
         this.depth = opts.depth;
-        this.steps = trail.story.length > 0 ? trail.story : stopsAsSteps(trail);
+    }
+
+    /** Ask the model for a walkthrough of the selection and wrap it in a session. */
+    static async create(deps: SessionDeps, opts: WalkOptions): Promise<WalkthroughSession> {
+        const { system, user } = buildWalkthroughPrompt({
+            code: opts.code,
+            language: opts.language,
+            fileLabel: opts.fileLabel,
+            vibePrompt: opts.vibe.prompt
+        });
+        const reply = await deps.complete(system, user);
+        const plan = parseWalkthrough(reply, opts.code.split('\n').length);
+        return new WalkthroughSession(deps, opts, plan);
     }
 
     get stepCount(): number {
-        return this.steps.length;
-    }
-
-    get currentIndex(): number {
-        return this.index;
+        return this.plan.steps.length;
     }
 
     snapshot(): PanelState {
-        const step = this.index >= 0 ? this.steps[this.index] : undefined;
-        const code = step?.code && step.code.lines ? step.code : undefined;
+        const step = this.index >= 0 ? this.plan.steps[this.index] : undefined;
+        const lines = this.opts.code.split('\n').slice(0, MAX_PREVIEW_LINES);
+        const first = this.opts.startLine ?? 1;
+        const highlight: number[] = [];
+        if (step) {
+            for (let n = step.startLine; n <= step.endLine; n++) {
+                highlight.push(first + n - 1);
+            }
+        }
         return {
-            mode: 'trail',
-            title: `Issue ${this.trail.issue}`,
+            mode: 'walkthrough',
+            title: 'Walkthrough',
             badge: `${this.depth} · ${this.opts.vibe.name}`,
-            codeLabel: step?.code ? `${step.code.file}:${step.code.start}` : this.trail.plainTitle,
-            code: code
-                ? { start: code.start, lines: code.lines.split('\n'), highlight: code.highlight, pointer: code.pointer }
-                : null,
+            codeLabel: this.opts.fileLabel ?? 'Selected code',
+            code: { start: first, lines, highlight },
             step: step
-                ? {
-                      index: this.index + 1,
-                      total: this.steps.length,
-                      title: step.title,
-                      chapter: step.chapter,
-                      proof: proofLabel(step.proof)
-                  }
+                ? { index: this.index + 1, total: this.plan.steps.length, title: step.title, basis: basisLabel(step.basis) }
                 : null,
             commands: null,
             placeholder: 'Say "next" or "back", or ask a question'
@@ -152,31 +159,14 @@ export class TrailSession implements Session {
     }
 
     start(): Reply {
-        const parts = [`Walking through issue ${this.trail.issue}: ${this.trail.plainTitle}.`];
-        if (this.trail.aiPolicy) {
-            parts.push(`Before you start, note the project's rule on AI-assisted contributions: ${this.trail.aiPolicy.text}`);
-        }
-        const { problem, cause, change } = this.trail.tldr ?? {};
-        if (problem) {
-            parts.push(`The problem: ${problem}`);
-        }
-        if (cause) {
-            parts.push(`The cause: ${cause}`);
-        }
-        if (change) {
-            parts.push(`Where you would change it: ${change}`);
-        }
-        parts.push(
-            this.steps.length > 0
-                ? `There are ${this.steps.length} steps. Say next to begin.`
-                : 'This trail has no walkthrough steps.'
-        );
-        return { text: parts.join(' '), action: 'Introduction' };
+        return {
+            text: `${this.plan.overview} There are ${this.plan.steps.length} steps. Say next to begin.`,
+            action: 'Overview'
+        };
     }
 
     async handle(utterance: string): Promise<Reply> {
-        const control = parseControl(utterance);
-        switch (control) {
+        switch (parseControl(utterance)) {
             case 'next':
                 return this.goTo(this.index + 1);
             case 'back':
@@ -195,12 +185,9 @@ export class TrailSession implements Session {
     }
 
     private goTo(i: number): Reply {
-        if (this.steps.length === 0) {
-            return this.start();
-        }
-        if (i >= this.steps.length) {
-            this.index = this.steps.length - 1;
-            return { text: "That's the end of the trail. Say back to revisit a step, or stop to finish.", action: 'End' };
+        if (i >= this.plan.steps.length) {
+            this.index = this.plan.steps.length - 1;
+            return { text: "That's the end of the walkthrough. Say back to revisit a step, or stop to finish.", action: 'End' };
         }
         this.index = Math.max(0, i);
         return this.narrate();
@@ -221,59 +208,39 @@ export class TrailSession implements Session {
     }
 
     private narrate(): Reply {
-        const step = this.steps[this.index];
-        const parts = [`Step ${this.index + 1} of ${this.steps.length}. ${step.title}.`, stepText(step, this.depth)];
-        if (this.depth !== 'simple' && step.code?.pointer) {
-            parts.push(`Look at this: ${step.code.pointer}`);
+        const step = this.plan.steps[this.index];
+        const parts = [`Step ${this.index + 1} of ${this.plan.steps.length}. ${step.title}.`, stepText(step, this.depth)];
+        const note = basisSpoken(step.basis);
+        if (note) {
+            parts.push(note);
         }
-        const proof = proofSpoken(step.proof);
-        if (proof) {
-            parts.push(proof);
-        }
-        if (step.code && this.deps.reveal) {
-            const { start, highlight, lines } = step.code;
-            const lineCount = lines ? lines.split('\n').length : 1;
-            const first = highlight.length > 0 ? Math.min(...highlight) : start;
-            const last = highlight.length > 0 ? Math.max(...highlight) : start + lineCount - 1;
-            this.deps.reveal({ file: step.code.file, start: first, end: last });
-        }
-        return { text: parts.join(' '), action: `Step ${this.index + 1} of ${this.steps.length}` };
+        const first = this.opts.startLine ?? 1;
+        this.deps.reveal?.({ start: first + step.startLine - 1, end: first + step.endLine - 1 });
+        return { text: parts.join(' '), action: `Step ${this.index + 1} of ${this.plan.steps.length}` };
     }
 
     private async answer(question: string): Promise<Reply> {
-        const step = this.index >= 0 ? this.steps[this.index] : undefined;
-        const context: string[] = [trailSummary(this.trail)];
+        const step = this.index >= 0 ? this.plan.steps[this.index] : undefined;
+        const context = [`Overview: ${this.plan.overview}`];
         if (step) {
-            context.push(`Current step ${this.index + 1} of ${this.steps.length}: ${step.title}. ${stepText(step, 'deep')}`);
-            if (step.code?.lines) {
-                context.push(`Code (${step.code.file}:${step.code.start}):\n${step.code.lines}`);
-            }
+            context.push(`Current step ${this.index + 1} of ${this.plan.steps.length}: ${step.title}. ${stepText(step, 'deep')}`);
         }
         const system =
-            `You are guiding a newcomer through the code behind an open-source issue, step by step. ` +
-            `${this.opts.vibe.prompt} ${SAFETY_NOTE}`;
+            `You are guiding someone through a piece of code, step by step. ${this.opts.vibe.prompt} ${SAFETY_NOTE}`;
         const user = [
-            '<trail_context>',
-            context.join('\n\n'),
-            '</trail_context>',
+            '<walkthrough_context>',
+            context.join('\n'),
+            '</walkthrough_context>',
             '',
-            `The contributor asks: "${question}"`,
-            'Answer using only the trail context above. If it does not contain the answer, say so plainly instead of guessing, and suggest what to look at.',
+            `<code_under_review${this.opts.fileLabel ? ` file="${this.opts.fileLabel}"` : ''}>`,
+            this.opts.code,
+            '</code_under_review>',
+            '',
+            `They ask: "${question}"`,
+            'Answer from the code and context above. If they do not contain the answer, say so plainly instead of guessing.',
             SPOKEN_STYLE
         ].join('\n');
         const text = await this.deps.complete(system, user);
         return { text, action: 'Question' };
     }
-}
-
-function stopsAsSteps(trail: Trail): StoryStep[] {
-    return trail.stops
-        .filter(s => s.whatItDoes)
-        .map(s => ({
-            chapter: 'Trail',
-            title: s.plainLabel,
-            detailed: s.whatItDoes,
-            trail: s.id,
-            code: { file: s.file, start: s.start, lines: '', highlight: [] }
-        }));
 }

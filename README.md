@@ -2,13 +2,13 @@
 
 Select code in VS Code, say (or type) what you want, and hear it explained.
 
-![Code Whisperer walking through an issue trail](media/panel-trail.png)
+![Code Whisperer walking through a function step by step](media/panel-walkthrough.png)
 
 - **Explain, optimize, find bugs, document, write tests, security review**: by voice, by typing, or by clicking a card.
 - **Three vibes**: Casual, Mentor, Professional.
 - **Bring your own model**: OpenAI, Anthropic, [Ollama](https://ollama.com) (fully local, no key, your code never leaves your machine), or any OpenAI-compatible server (LM Studio, llama.cpp, vLLM…).
 - **Reads answers aloud** with your system voice. No extra services, no extra cost.
-- **[crumbs](https://github.com/navyabijoy/crumbs) integration**: narrates an issue trail step by step. See [below](#walk-through-a-crumbs-issue-trail).
+- **Step-by-step walkthrough**: a guided, spoken tour of any selection. See [below](#walk-through-code-step-by-step).
 - No runtime dependencies. MIT licensed.
 
 ## Install
@@ -59,29 +59,20 @@ Privacy notes:
 
 Replies use your system voice: `say` on macOS, SAPI on Windows, `spd-say` or `espeak-ng` on Linux (install one if you hear nothing). Turn it off or change the speed in settings (`speech.enabled`, `speech.rate`). **Code Whisperer: Stop Speaking** interrupts.
 
-## Walk through a crumbs issue trail
+## Walk through code step by step
 
-[crumbs](https://github.com/navyabijoy/crumbs) is an agent skill that traces the code behind an open-source issue and writes a verified `.crumbs/<issue>/trail.json`. Code Whisperer can **narrate that trail out loud**, so you can walk through an unfamiliar codebase hands-free:
+Select code and run **Code Whisperer: Walk Through Selected Code (Step by Step)**. It plans a short tour of the selection (an overview plus up to 12 ordered steps), reads the overview aloud, and waits for you to steer:
 
-1. In your coding agent, inside a clone of the project: `/crumbs explain issue #123`
-2. In VS Code, open that folder and run **Code Whisperer: Walk Through a crumbs Issue Trail**.
-3. Listen, and steer with your voice or the buttons:
-
-| Say | Does |
+| Say (or click) | Does |
 |---|---|
-| "next" / "back" / "repeat" | Move between steps. The editor jumps to each step's code and highlights the key lines |
-| "simpler" / "deeper" | Switch between crumbs's simple, detailed and deep wording |
-| any question | Answered from the trail and the current step only. If the trail doesn't say, it tells you |
+| "next" / "back" / "repeat" | Move between steps. The editor highlights that step's lines |
+| "simpler" / "deeper" | Switch between one plain sentence, a detailed explanation, and a deep one that adds *why* it is built that way and what to watch for |
+| any question | Answered from the code and the step you are on. If the code doesn't say, it tells you instead of guessing |
 | "stop" | Ends the walkthrough |
 
-It carries crumbs's honesty with it:
-- The project's **AI-contribution policy is read out first**, if the repo has one.
-- Each step says how it is known (*"Confirmed by running the real failing test"*, *"Read from the code, not run"*, *"This part is an inference, so check it before relying on it"*).
-- Code Whisperer never writes the fix and never touches the issue, same as crumbs.
+**It tells you how it knows.** Each step is labelled *Read in code* (the selected code states it) or *Inferred* (it depends on code you didn't select, or is a reasoned guess). Inferred steps say so out loud: "This part is an inference, so check it before relying on it."
 
-Selections that sit on a crumbs trail are also explained **with the issue as context** when you use the normal explain command.
-
-`trail.json` is produced from untrusted issue text, so it is treated as data: file paths that point outside the project are ignored, and the model is told not to follow instructions found in it.
+The model's plan is validated before anything is spoken: line ranges are clamped to your selection, only those two labels are accepted (anything unclear is treated as *Inferred*), and a malformed reply gives a clear error instead of garbage.
 
 ## Settings
 
@@ -93,14 +84,14 @@ Selections that sit on a crumbs trail are also explained **with the issue as con
 | `codeWhispererVoice.maxTokens` | 700 | reply length cap |
 | `codeWhispererVoice.defaultVibe` | Ask each time | or `Casual` / `Mentor` / `Professional` |
 | `codeWhispererVoice.speech.enabled` / `.rate` | true / 1 | |
-| `codeWhispererVoice.crumbs.depth` | `detailed` | `simple`, `detailed`, `deep` |
+| `codeWhispererVoice.walkthrough.depth` | `detailed` | `simple`, `detailed`, `deep` |
 
 ## Troubleshooting
 
 - **Nothing is spoken**: install `espeak-ng` or `speech-dispatcher` on Linux; check `speech.enabled`.
 - **The Talk page says the mic is blocked**: allow microphone access for `127.0.0.1` in the address bar. Firefox has no speech recognition; use Chrome, Edge or Safari, or type.
 - **"No API key"**: run **Code Whisperer: Set API Key**, or use `ollama`.
-- **"No crumbs trail found"**: open the same folder you ran crumbs in; the file is `.crumbs/<issue>/trail.json`.
+- **"Could not build a walkthrough"**: the model returned something that was not a usable plan. Try again, select a smaller piece of code, or use a stronger model (small local models sometimes break the JSON format).
 
 ## Development
 
@@ -111,10 +102,6 @@ npm run watch       # then press F5 in VS Code to launch the extension host
 ```
 
 All logic lives in `src/core/` and is independent of the VS Code API, so it is unit tested; `src/extension.ts` is thin wiring. See [CONTRIBUTING.md](CONTRIBUTING.md).
-
-## Credits
-
-The trail integration is built on [crumbs](https://github.com/navyabijoy/crumbs) by Navya Bijoy (MIT). `test-fixtures/example-trail.json` is her bundled example.
 
 ## License
 

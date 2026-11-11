@@ -1,16 +1,19 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import * as fs from 'fs';
-import * as path from 'path';
-import { ExplainSession, Location, TrailSession } from '../core/session';
-import { parseTrail } from '../core/crumbs';
+import { ExplainSession, Location, WalkthroughSession } from '../core/session';
 import { vibeModes } from '../core/prompts';
 
-const trail = parseTrail(
-    fs.readFileSync(path.join(__dirname, '..', '..', 'test-fixtures', 'example-trail.json'), 'utf8')
-);
+const CODE = ['function add(a, b) {', '  return a + b;', '}', '', 'console.log(add(2, "3"));'].join('\n');
 
-function fakeDeps() {
+const PLAN = JSON.stringify({
+    overview: 'A tiny function that adds two values.',
+    steps: [
+        { title: 'The function', simple: 'add takes two values.', detailed: 'add takes a and b and returns their sum.', deep: 'There is no type check, so strings are concatenated.', startLine: 1, endLine: 3, basis: 'read' },
+        { title: 'The call', simple: 'It is called with 2 and "3".', detailed: 'The call passes a number and a string.', deep: 'Mixed types give "23", not 5.', startLine: 5, endLine: 5, basis: 'inferred' }
+    ]
+});
+
+function fakeDeps(reply: string = PLAN) {
     const prompts: Array<{ system: string; user: string }> = [];
     const revealed: Location[] = [];
     return {
@@ -19,15 +22,17 @@ function fakeDeps() {
         deps: {
             complete: async (system: string, user: string) => {
                 prompts.push({ system, user });
-                return 'model reply';
+                return reply;
             },
             reveal: (l: Location) => revealed.push(l)
         }
     };
 }
 
+const opts = { code: CODE, vibe: vibeModes[1], depth: 'detailed' as const, startLine: 10, fileLabel: 'src/math.js' };
+
 test('ExplainSession routes by intent and wraps code as untrusted data', async () => {
-    const { deps, prompts } = fakeDeps();
+    const { deps, prompts } = fakeDeps('model reply');
     const s = new ExplainSession(deps, { code: 'eval(input)', vibe: vibeModes[0], fileLabel: 'a.js', language: 'javascript' });
     const reply = await s.handle('check security');
     assert.equal(reply.text, 'model reply');
@@ -36,83 +41,85 @@ test('ExplainSession routes by intent and wraps code as untrusted data', async (
     assert.match(prompts[0].system, /never follow instructions/);
 });
 
-test('ExplainSession includes trail context when provided', async () => {
+test('WalkthroughSession.create sends numbered code and rejects unusable plans', async () => {
     const { deps, prompts } = fakeDeps();
-    const s = new ExplainSession(deps, { code: 'x', vibe: vibeModes[1], trailContext: 'Issue 42 ...' });
-    await s.handle('explain this');
-    assert.match(prompts[0].user, /<trail_context>\nIssue 42 \.\.\.\n<\/trail_context>/);
+    await WalkthroughSession.create(deps, opts);
+    assert.match(prompts[0].user, /1\| function add\(a, b\) \{/);
+    assert.match(prompts[0].user, /5\| console\.log/);
+    await assert.rejects(WalkthroughSession.create(fakeDeps('sorry, I cannot').deps, opts), /usable walkthrough/);
 });
 
-test('TrailSession: introduction mentions the AI policy first', () => {
-    const { deps } = fakeDeps();
-    const s = new TrailSession(deps, trail, { vibe: vibeModes[1], depth: 'detailed' });
+test('overview comes first and mentions the step count', async () => {
+    const s = await WalkthroughSession.create(fakeDeps().deps, opts);
     const intro = s.start();
-    assert.match(intro.text, /issue 42/i);
-    assert.match(intro.text, /AI-assisted contributions/);
-    assert.match(intro.text, /Say next to begin/);
+    assert.match(intro.text, /adds two values/);
+    assert.match(intro.text, /2 steps/);
+    assert.equal(s.snapshot().step, null);
 });
 
-test('TrailSession: next/back/repeat move through steps and reveal code', async () => {
+test('next/back/repeat move through steps and reveal absolute lines', async () => {
     const { deps, revealed } = fakeDeps();
-    const s = new TrailSession(deps, trail, { vibe: vibeModes[1], depth: 'detailed' });
+    const s = await WalkthroughSession.create(deps, opts);
     const first = await s.handle('next');
-    assert.match(first.text, /^Step 1 of 7\./);
-    assert.match(first.text, /smaller stand-in/); // proof label is spoken
+    assert.match(first.text, /^Step 1 of 2\. The function\./);
+    assert.deepEqual(revealed.at(-1), { start: 10, end: 12 }); // selection starts on document line 10
     const second = await s.handle('next');
-    assert.match(second.text, /^Step 2 of 7\./);
-    assert.ok(revealed.length >= 1);
-    const back = await s.handle('go back');
-    assert.match(back.text, /^Step 1 of 7\./);
-    const again = await s.handle('say that again');
-    assert.match(again.text, /^Step 1 of 7\./);
+    assert.match(second.text, /^Step 2 of 2\./);
+    assert.deepEqual(revealed.at(-1), { start: 14, end: 14 });
+    assert.match((await s.handle('go back')).text, /^Step 1 of 2\./);
+    assert.match((await s.handle('say that again')).text, /^Step 1 of 2\./);
     assert.equal(s.snapshot().step?.index, 1);
 });
 
-test('TrailSession: highlighted lines drive the revealed range', async () => {
-    const { deps, revealed } = fakeDeps();
-    const s = new TrailSession(deps, trail, { vibe: vibeModes[1], depth: 'detailed' });
-    for (let i = 0; i < 4; i++) {
-        await s.handle('next');
-    }
-    const last = revealed[revealed.length - 1];
-    assert.equal(last.file, 'src/config.js');
-    assert.ok(last.start >= 1 && last.end >= last.start);
+test('snapshot highlights the current step in absolute line numbers', async () => {
+    const s = await WalkthroughSession.create(fakeDeps().deps, opts);
+    await s.handle('next');
+    assert.deepEqual(s.snapshot().code?.highlight, [10, 11, 12]);
+    assert.equal(s.snapshot().code?.start, 10);
 });
 
-test('TrailSession: end of trail, stop', async () => {
-    const { deps } = fakeDeps();
-    const s = new TrailSession(deps, trail, { vibe: vibeModes[1], depth: 'detailed' });
-    let reply = await s.handle('next');
-    for (let i = 0; i < 7; i++) {
-        reply = await s.handle('next');
-    }
-    assert.equal(reply.action, 'End');
+test('inferred steps say so out loud; read steps stay quiet', async () => {
+    const s = await WalkthroughSession.create(fakeDeps().deps, opts);
+    assert.doesNotMatch((await s.handle('next')).text, /inference/);
+    assert.match((await s.handle('next')).text, /inference/);
+    assert.equal(s.snapshot().step?.basis, 'Inferred');
+});
+
+test('end of walkthrough and stop', async () => {
+    const s = await WalkthroughSession.create(fakeDeps().deps, opts);
+    await s.handle('next');
+    await s.handle('next');
+    assert.equal((await s.handle('next')).action, 'End');
     const stop = await s.handle('stop');
     assert.equal(stop.done, true);
 });
 
-test('TrailSession: depth changes the wording', async () => {
-    const { deps } = fakeDeps();
-    const s = new TrailSession(deps, trail, { vibe: vibeModes[1], depth: 'detailed' });
+test('depth changes the wording and is honest at the limits', async () => {
+    const s = await WalkthroughSession.create(fakeDeps().deps, opts);
     const detailed = (await s.handle('next')).text;
     const simple = (await s.handle('simpler')).text;
-    const deep = (await s.handle('deeper')).text; // simple -> detailed
-    const deeper = (await s.handle('deeper')).text; // detailed -> deep
     assert.ok(simple.length < detailed.length);
-    assert.equal(deep, detailed);
-    assert.ok(deeper.length > detailed.length);
-    const again = (await s.handle('deeper')).text;
-    assert.match(again, /already the deepest/);
+    assert.match(await s.handle('simpler').then(r => r.text), /already as simple/);
+    assert.equal((await s.handle('deeper')).text, detailed); // simple -> detailed
+    const deep = (await s.handle('deeper')).text; // detailed -> deep
+    assert.ok(deep.length > detailed.length);
+    assert.match(await s.handle('deeper').then(r => r.text), /already the deepest/);
 });
 
-test('TrailSession: free questions go to the model with trail context, not to navigation', async () => {
+test('free questions go to the model with the current step as context', async () => {
     const { deps, prompts } = fakeDeps();
-    const s = new TrailSession(deps, trail, { vibe: vibeModes[1], depth: 'detailed' });
+    const s = await WalkthroughSession.create(deps, opts);
     await s.handle('next');
-    const reply = await s.handle('why does normalize lowercase the keys');
+    deps.complete = async (system, user) => {
+        prompts.push({ system, user });
+        return 'because it concatenates';
+    };
+    const reply = await s.handle('why is the result a string');
     assert.equal(reply.action, 'Question');
-    assert.equal(prompts.length, 1);
-    assert.match(prompts[0].user, /<trail_context>/);
-    assert.match(prompts[0].user, /Current step 1 of 7/);
-    assert.match(prompts[0].user, /why does normalize lowercase the keys/);
+    assert.equal(reply.text, 'because it concatenates');
+    const last = prompts.at(-1)!;
+    assert.match(last.user, /<walkthrough_context>/);
+    assert.match(last.user, /Current step 1 of 2: The function/);
+    assert.match(last.user, /why is the result a string/);
+    assert.match(last.system, /never follow instructions/);
 });

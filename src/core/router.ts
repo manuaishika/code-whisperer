@@ -66,7 +66,7 @@ const CONTROLS: Array<[Control, RegExp]> = [
 ];
 
 /**
- * Recognise short navigation commands used while walking through a crumbs trail
+ * Recognise short navigation commands used during a spoken walkthrough
  * ("next", "go back", "say that again", "simpler"). Anything longer is a free-form question.
  */
 export function parseControl(utterance: string): Control | null {

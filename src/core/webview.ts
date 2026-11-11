@@ -27,7 +27,6 @@ export function panelHtml(opts: { nonce: string; cspSource: string }): string {
   .ln { display: block; padding: 0 12px; white-space: pre; }
   .ln b { display: inline-block; width: 3.2em; opacity: .5; font-weight: normal; user-select: none; }
   .ln.hl { background: var(--vscode-editor-findMatchHighlightBackground, rgba(255, 200, 0, .25)); }
-  .pointer { font-size: .85em; opacity: .85; margin-top: 6px; }
   .step { margin: 10px 0 0; font-weight: 600; }
   .row { display: flex; gap: 8px; flex-wrap: wrap; margin: 14px 0; align-items: center; }
   button { background: var(--vscode-button-secondaryBackground, var(--vscode-button-background)); color: var(--vscode-button-secondaryForeground, var(--vscode-button-foreground)); border: 1px solid transparent; border-radius: 4px; padding: 6px 12px; cursor: pointer; font: inherit; }
@@ -56,7 +55,6 @@ export function panelHtml(opts: { nonce: string; cspSource: string }): string {
 
   <div class="label" id="codeLabel"></div>
   <pre id="code" class="hidden" aria-label="Code"></pre>
-  <div class="pointer hidden" id="pointer"></div>
   <div class="step hidden" id="step"></div>
 
   <div class="grid hidden" id="commands"></div>
@@ -104,10 +102,10 @@ export function panelHtml(opts: { nonce: string; cspSource: string }): string {
     vscode.postMessage({ type: 'utterance', text: text });
   }
 
-  function renderCode(code, pointer) {
+  function renderCode(code) {
     var pre = $('code');
     pre.textContent = '';
-    if (!code) { pre.classList.add('hidden'); $('pointer').classList.add('hidden'); return; }
+    if (!code) { pre.classList.add('hidden'); return; }
     var hl = {};
     (code.highlight || []).forEach(function (n) { hl[n] = true; });
     code.lines.forEach(function (line, i) {
@@ -121,8 +119,6 @@ export function panelHtml(opts: { nonce: string; cspSource: string }): string {
       pre.appendChild(row);
     });
     pre.classList.remove('hidden');
-    var p = $('pointer');
-    if (code.pointer) { p.textContent = code.pointer; p.classList.remove('hidden'); } else { p.classList.add('hidden'); }
   }
 
   function renderState(s) {
@@ -134,18 +130,18 @@ export function panelHtml(opts: { nonce: string; cspSource: string }): string {
 
     var stepEl = $('step');
     if (s.step) {
-      stepEl.textContent = 'Step ' + s.step.index + ' of ' + s.step.total + ' · ' + s.step.chapter + ' — ' + s.step.title;
-      if (s.step.proof) {
+      stepEl.textContent = 'Step ' + s.step.index + ' of ' + s.step.total + ' — ' + s.step.title;
+      if (s.step.basis) {
         var tag = document.createElement('span');
         tag.className = 'proof';
-        tag.textContent = s.step.proof;
+        tag.textContent = s.step.basis;
         stepEl.appendChild(document.createTextNode(' '));
         stepEl.appendChild(tag);
       }
       stepEl.classList.remove('hidden');
     } else { stepEl.classList.add('hidden'); }
 
-    $('nav').classList.toggle('hidden', s.mode !== 'trail');
+    $('nav').classList.toggle('hidden', s.mode !== 'walkthrough');
 
     var grid = $('commands');
     grid.textContent = '';

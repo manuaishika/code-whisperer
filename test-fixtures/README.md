@@ -1,1 +1,0 @@
-`example-trail.json` is the fictional example trail from [crumbs](https://github.com/navyabijoy/crumbs) (MIT licensed, by navyabijoy). It is used to check that Code Whisperer reads the real crumbs format.

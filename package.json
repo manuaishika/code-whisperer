@@ -1,7 +1,7 @@
 {
   "name": "code-whisperer-voice",
   "displayName": "Code Whisperer Voice",
-  "description": "Select code, speak or type a command, and hear it explained. Works with OpenAI, Anthropic, Ollama or any OpenAI-compatible server, and can narrate crumbs issue trails.",
+  "description": "Select code, speak or type a command, and hear it explained. Works with OpenAI, Anthropic, Ollama or any OpenAI-compatible server, and can walk you through code step by step.",
   "version": "0.1.0",
   "publisher": "manuaishika",
   "license": "MIT",
@@ -23,7 +23,7 @@
     "ollama",
     "openai",
     "anthropic",
-    "crumbs"
+    "walkthrough"
   ],
   "engines": {
     "vscode": "^1.75.0"
@@ -41,8 +41,8 @@
         "category": "Code Whisperer"
       },
       {
-        "command": "code-whisperer-voice.walkCrumbsTrail",
-        "title": "Walk Through a crumbs Issue Trail",
+        "command": "code-whisperer-voice.walkThroughSelection",
+        "title": "Walk Through Selected Code (Step by Step)",
         "category": "Code Whisperer"
       },
       {
@@ -62,6 +62,11 @@
           "command": "code-whisperer-voice.explainSelectedCodeVoice",
           "when": "editorHasSelection",
           "group": "navigation@99"
+        },
+        {
+          "command": "code-whisperer-voice.walkThroughSelection",
+          "when": "editorHasSelection",
+          "group": "navigation@100"
         }
       ]
     },
@@ -111,7 +116,7 @@
             "Professional"
           ],
           "default": "Ask each time",
-          "description": "Explanation style. The crumbs walkthrough falls back to Mentor when this is \"Ask each time\"."
+          "description": "Explanation style. The walkthrough falls back to Mentor when this is \"Ask each time\"."
         },
         "codeWhispererVoice.speech.enabled": {
           "type": "boolean",
@@ -125,7 +130,7 @@
           "maximum": 2,
           "description": "Speaking speed. 1 is normal."
         },
-        "codeWhispererVoice.crumbs.depth": {
+        "codeWhispererVoice.walkthrough.depth": {
           "type": "string",
           "enum": [
             "simple",
@@ -133,7 +138,7 @@
             "deep"
           ],
           "default": "detailed",
-          "description": "How much detail the crumbs walkthrough speaks. You can also say \"simpler\" or \"deeper\" at any step."
+          "description": "How much detail the walkthrough speaks. You can also say \"simpler\" or \"deeper\" at any step."
         },
         "codeWhispererVoice.openaiApiKey": {
           "type": "string",

@@ -1,13 +1,12 @@
 import * as vscode from 'vscode';
-import * as path from 'path';
 import { complete, LlmConfig, LlmError, PROVIDERS, Provider, providerNeedsKey, envKeyName } from './core/llm';
 import { VibeMode, vibeModes } from './core/prompts';
 import { Speaker } from './core/speech';
 import { makeNonce } from './core/escape';
 import { panelHtml } from './core/webview';
 import { VoiceBridge } from './core/voiceBridge';
-import { ExplainSession, Location, Session, SessionDeps, TrailSession } from './core/session';
-import { Depth, findTrails, loadTrail, stopForLocation, trailSummary, Trail } from './core/crumbs';
+import { CodeOptions, ExplainSession, Location, Session, SessionDeps, WalkthroughSession } from './core/session';
+import { Depth } from './core/walkthrough';
 
 const SECRET_PREFIX = 'codeWhispererVoice.apiKey.';
 const cfg = () => vscode.workspace.getConfiguration('codeWhispererVoice');
@@ -21,7 +20,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
     context.subscriptions.push(
         vscode.commands.registerCommand('code-whisperer-voice.explainSelectedCodeVoice', () => explainSelection(context)),
-        vscode.commands.registerCommand('code-whisperer-voice.walkCrumbsTrail', () => walkTrail(context)),
+        vscode.commands.registerCommand('code-whisperer-voice.walkThroughSelection', () => walkSelection(context)),
         vscode.commands.registerCommand('code-whisperer-voice.setApiKey', () => promptForKey(context, currentProvider())),
         vscode.commands.registerCommand('code-whisperer-voice.stopSpeaking', () => speaker.stop()),
         { dispose: () => speaker.stop() }
@@ -93,7 +92,7 @@ async function resolveLlmConfig(context: vscode.ExtensionContext): Promise<LlmCo
     };
 }
 
-function makeDeps(context: vscode.ExtensionContext, rootUri?: vscode.Uri): SessionDeps {
+function makeDeps(context: vscode.ExtensionContext, editor?: vscode.TextEditor): SessionDeps {
     return {
         complete: async (system, user) => {
             const config = await resolveLlmConfig(context);
@@ -107,33 +106,25 @@ function makeDeps(context: vscode.ExtensionContext, rootUri?: vscode.Uri): Sessi
                 throw err;
             }
         },
-        reveal: rootUri ? loc => void revealLocation(rootUri, loc) : undefined
+        reveal: editor ? loc => revealLines(editor, loc) : undefined
     };
 }
 
-async function revealLocation(root: vscode.Uri, loc: Location): Promise<void> {
+/** Select and scroll to a line range in the editor the code came from, without stealing focus. */
+function revealLines(editor: vscode.TextEditor, loc: Location): void {
     try {
-        const uri = vscode.Uri.joinPath(root, ...loc.file.split('/'));
-        // Belt and braces: refuse to open anything that resolves outside the workspace folder.
-        if (!path.resolve(uri.fsPath).startsWith(path.resolve(root.fsPath) + path.sep)) {
-            return;
-        }
-        const doc = await vscode.workspace.openTextDocument(uri);
-        const range = new vscode.Range(
-            Math.max(0, loc.start - 1),
-            0,
-            Math.max(0, loc.end - 1),
-            doc.lineAt(Math.min(doc.lineCount - 1, Math.max(0, loc.end - 1))).text.length
-        );
-        const editor = await vscode.window.showTextDocument(doc, {
-            viewColumn: vscode.ViewColumn.One,
-            preserveFocus: true,
-            preview: false
-        });
-        editor.selection = new vscode.Selection(range.start, range.end);
-        editor.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+        const doc = editor.document;
+        const startLine = Math.min(doc.lineCount - 1, Math.max(0, loc.start - 1));
+        const endLine = Math.min(doc.lineCount - 1, Math.max(startLine, loc.end - 1));
+        const range = new vscode.Range(startLine, 0, endLine, doc.lineAt(endLine).text.length);
+        void vscode.window
+            .showTextDocument(doc, { viewColumn: editor.viewColumn, preserveFocus: true, preview: false })
+            .then(shown => {
+                shown.selection = new vscode.Selection(range.start, range.end);
+                shown.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+            });
     } catch {
-        /* file may not exist at this commit; the narration still works */
+        /* the document may have been closed; the narration still works */
     }
 }
 
@@ -260,23 +251,32 @@ function friendlyError(err: unknown): string {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Command: explain the selection
+// Commands
 // ---------------------------------------------------------------------------------------------
 
-async function explainSelection(context: vscode.ExtensionContext): Promise<void> {
+interface Picked {
+    editor: vscode.TextEditor;
+    options: CodeOptions;
+}
+
+/** Validate the editor selection and choose a vibe. Returns undefined if the user backs out. */
+async function pickSelection(defaultVibe: string | undefined): Promise<Picked | undefined> {
     const editor = vscode.window.activeTextEditor;
     if (!editor) {
         void vscode.window.showErrorMessage('No active editor found.');
-        return;
+        return undefined;
     }
-    const selectedCode = editor.document.getText(editor.selection);
-    if (!selectedCode.trim()) {
+    const code = editor.document.getText(editor.selection);
+    if (!code.trim()) {
         void vscode.window.showErrorMessage('Select some code first.');
-        return;
+        return undefined;
     }
 
     const configured = cfg().get<string>('defaultVibe', 'Ask each time');
     let vibe: VibeMode | undefined = vibeModes.find(v => v.name === configured);
+    if (!vibe && defaultVibe) {
+        vibe = vibeModes.find(v => v.name === defaultVibe);
+    }
     if (!vibe) {
         const picked = await vscode.window.showQuickPick(
             vibeModes.map(v => ({ label: v.name, description: v.description, detail: v.prompt })),
@@ -285,97 +285,44 @@ async function explainSelection(context: vscode.ExtensionContext): Promise<void>
         vibe = vibeModes.find(v => v.name === picked?.label);
     }
     if (!vibe) {
-        return;
+        return undefined;
     }
 
     const folder = vscode.workspace.getWorkspaceFolder(editor.document.uri);
-    const relPath = folder ? vscode.workspace.asRelativePath(editor.document.uri, false) : undefined;
-    const startLine = editor.selection.start.line + 1;
+    return {
+        editor,
+        options: {
+            code,
+            language: editor.document.languageId,
+            fileLabel: folder ? vscode.workspace.asRelativePath(editor.document.uri, false) : undefined,
+            startLine: editor.selection.start.line + 1,
+            vibe
+        }
+    };
+}
 
-    // If the user has run crumbs on an issue and this code is on its trail, say so to the model.
-    let trailContext: string | undefined;
-    if (folder && relPath) {
-        const ctx = trailContextFor(folder.uri.fsPath, relPath, startLine);
-        trailContext = ctx;
+async function explainSelection(context: vscode.ExtensionContext): Promise<void> {
+    const picked = await pickSelection(undefined);
+    if (!picked) {
+        return;
     }
-
-    const session = new ExplainSession(makeDeps(context), {
-        code: selectedCode,
-        language: editor.document.languageId,
-        fileLabel: relPath,
-        startLine,
-        vibe,
-        trailContext
-    });
+    const session = new ExplainSession(makeDeps(context), picked.options);
     openPanel(context, session, 'Say what you want about the selected code: "explain this", "find bugs", "optimize this", "write tests"…');
 }
 
-function trailContextFor(root: string, relPath: string, line: number): string | undefined {
-    for (const ref of findTrails(root)) {
-        try {
-            const trail = loadTrail(ref.file);
-            const stop = stopForLocation(trail, relPath, line);
-            if (stop) {
-                return trailSummary(trail, stop);
-            }
-        } catch {
-            /* ignore unreadable trails */
-        }
-    }
-    return undefined;
-}
-
-// ---------------------------------------------------------------------------------------------
-// Command: walk a crumbs trail
-// ---------------------------------------------------------------------------------------------
-
-async function walkTrail(context: vscode.ExtensionContext): Promise<void> {
-    const folder = vscode.workspace.workspaceFolders?.[0];
-    if (!folder) {
-        void vscode.window.showErrorMessage('Open the project folder you ran crumbs in first.');
+async function walkSelection(context: vscode.ExtensionContext): Promise<void> {
+    const picked = await pickSelection('Mentor');
+    if (!picked) {
         return;
     }
-    const trails = findTrails(folder.uri.fsPath);
-    if (trails.length === 0) {
-        const choice = await vscode.window.showInformationMessage(
-            'No crumbs trail found in this folder (.crumbs/<issue>/trail.json). Run crumbs in your coding agent first, e.g. "/crumbs explain issue #123".',
-            'Open crumbs'
-        );
-        if (choice === 'Open crumbs') {
-            void vscode.env.openExternal(vscode.Uri.parse('https://github.com/navyabijoy/crumbs'));
-        }
-        return;
-    }
-
-    let chosen = trails[0];
-    if (trails.length > 1) {
-        const items = trails.map(t => {
-            let title = '';
-            try {
-                title = loadTrail(t.file).plainTitle;
-            } catch {
-                title = '(unreadable trail.json)';
-            }
-            return { label: `Issue ${t.issue}`, description: title, trail: t };
-        });
-        const picked = await vscode.window.showQuickPick(items, { placeHolder: 'Which issue do you want to walk through?' });
-        if (!picked) {
-            return;
-        }
-        chosen = picked.trail;
-    }
-
-    let trail: Trail;
+    const depth = cfg().get<Depth>('walkthrough.depth', 'detailed');
     try {
-        trail = loadTrail(chosen.file);
+        const session = await vscode.window.withProgress(
+            { location: vscode.ProgressLocation.Notification, title: 'Code Whisperer: planning the walkthrough…' },
+            () => WalkthroughSession.create(makeDeps(context, picked.editor), { ...picked.options, depth })
+        );
+        openPanel(context, session, 'Say "next", "back", "simpler", "deeper" or "repeat" to move through the code, or ask a question about the current step.');
     } catch (err) {
-        void vscode.window.showErrorMessage(`Could not read ${path.basename(path.dirname(chosen.file))}/trail.json: ${friendlyError(err)}`);
-        return;
+        void vscode.window.showErrorMessage(`Could not build a walkthrough: ${friendlyError(err)}`);
     }
-
-    const vibeName = cfg().get<string>('defaultVibe', 'Mentor');
-    const vibe = vibeModes.find(v => v.name === vibeName) ?? vibeModes[1];
-    const depth = cfg().get<Depth>('crumbs.depth', 'detailed');
-    const session = new TrailSession(makeDeps(context, folder.uri), trail, { vibe, depth });
-    openPanel(context, session, 'Say "next", "back", "simpler", "deeper" or "repeat" to move through the trail, or ask a question about the current step.');
 }

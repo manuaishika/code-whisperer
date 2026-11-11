@@ -4,7 +4,6 @@
 src/**
 out/test/**
 out/**/*.map
-test-fixtures/**
 examples/**
 media/panel-*.png
 media/voice-page.png
