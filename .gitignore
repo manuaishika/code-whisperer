@@ -1,4 +1,7 @@
 node_modules/
 out/
-.vscode/
-.env 
+.vscode/*
+!.vscode/launch.json
+.vscode-test/
+.env
+*.vsix

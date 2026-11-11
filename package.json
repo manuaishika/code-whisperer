@@ -1,48 +1,166 @@
 {
   "name": "code-whisperer-voice",
   "displayName": "Code Whisperer Voice",
-  "description": "Explain code with your voice and get spoken explanations with vibe modes.",
-  "version": "0.0.1",
-  "publisher": "your-publisher-name",
-  "engines": {
-    "vscode": ">=1.70.0"
+  "description": "Select code, speak or type a command, and hear it explained. Works with OpenAI, Anthropic, Ollama or any OpenAI-compatible server, and can walk you through code step by step.",
+  "version": "0.1.0",
+  "publisher": "manuaishika",
+  "license": "MIT",
+  "icon": "media/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/manuaishika/code-whisperer.git"
   },
-  "categories": ["Other"],
-  "activationEvents": [
-    "onCommand:code-whisperer-voice.explainSelectedCodeVoice"
+  "bugs": {
+    "url": "https://github.com/manuaishika/code-whisperer/issues"
+  },
+  "homepage": "https://github.com/manuaishika/code-whisperer#readme",
+  "keywords": [
+    "voice",
+    "speech",
+    "text-to-speech",
+    "explain code",
+    "accessibility",
+    "ollama",
+    "openai",
+    "anthropic",
+    "walkthrough"
+  ],
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Education",
+    "Other"
   ],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
       {
         "command": "code-whisperer-voice.explainSelectedCodeVoice",
-        "title": "Explain Selected Code (Voice Mode)"
+        "title": "Explain Selected Code (Voice Mode)",
+        "category": "Code Whisperer"
+      },
+      {
+        "command": "code-whisperer-voice.walkThroughSelection",
+        "title": "Walk Through Selected Code (Step by Step)",
+        "category": "Code Whisperer"
+      },
+      {
+        "command": "code-whisperer-voice.setApiKey",
+        "title": "Set API Key",
+        "category": "Code Whisperer"
+      },
+      {
+        "command": "code-whisperer-voice.stopSpeaking",
+        "title": "Stop Speaking",
+        "category": "Code Whisperer"
       }
     ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "code-whisperer-voice.explainSelectedCodeVoice",
+          "when": "editorHasSelection",
+          "group": "navigation@99"
+        },
+        {
+          "command": "code-whisperer-voice.walkThroughSelection",
+          "when": "editorHasSelection",
+          "group": "navigation@100"
+        }
+      ]
+    },
     "configuration": {
       "title": "Code Whisperer Voice",
       "properties": {
+        "codeWhispererVoice.provider": {
+          "type": "string",
+          "enum": [
+            "openai",
+            "anthropic",
+            "ollama",
+            "openai-compatible"
+          ],
+          "enumDescriptions": [
+            "OpenAI API (needs an API key)",
+            "Anthropic API (needs an API key)",
+            "Ollama running locally. No key, and your code never leaves your machine",
+            "Any server with an OpenAI-style /chat/completions endpoint (LM Studio, llama.cpp, vLLM, ...). Set baseUrl"
+          ],
+          "default": "openai",
+          "description": "Which language model service answers your questions."
+        },
+        "codeWhispererVoice.model": {
+          "type": "string",
+          "default": "",
+          "description": "Model name. Leave empty for the provider default (gpt-4o-mini, claude-sonnet-5-5, llama3.1)."
+        },
+        "codeWhispererVoice.baseUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Override the API address, e.g. http://localhost:1234/v1 for LM Studio. Required for the openai-compatible provider."
+        },
+        "codeWhispererVoice.maxTokens": {
+          "type": "number",
+          "default": 700,
+          "minimum": 100,
+          "maximum": 4000,
+          "description": "Maximum length of each reply."
+        },
+        "codeWhispererVoice.defaultVibe": {
+          "type": "string",
+          "enum": [
+            "Ask each time",
+            "Casual",
+            "Mentor",
+            "Professional"
+          ],
+          "default": "Ask each time",
+          "description": "Explanation style. The walkthrough falls back to Mentor when this is \"Ask each time\"."
+        },
+        "codeWhispererVoice.speech.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Read replies aloud with your system voice."
+        },
+        "codeWhispererVoice.speech.rate": {
+          "type": "number",
+          "default": 1,
+          "minimum": 0.5,
+          "maximum": 2,
+          "description": "Speaking speed. 1 is normal."
+        },
+        "codeWhispererVoice.walkthrough.depth": {
+          "type": "string",
+          "enum": [
+            "simple",
+            "detailed",
+            "deep"
+          ],
+          "default": "detailed",
+          "description": "How much detail the walkthrough speaks. You can also say \"simpler\" or \"deeper\" at any step."
+        },
         "codeWhispererVoice.openaiApiKey": {
           "type": "string",
           "default": "",
-          "description": "OpenAI API key for code explanation generation"
+          "deprecationMessage": "Deprecated: keys are now stored encrypted. Run \"Code Whisperer: Set API Key\" and delete this setting.",
+          "description": "Deprecated. Migrated to secret storage on first run."
         }
       }
     }
   },
   "scripts": {
-    "vscode:prepublish": "tsc -p ./",
+    "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile",
-    "test": "node ./out/test/runTest.js"
+    "test": "node scripts/run-tests.js",
+    "package": "vsce package"
   },
   "devDependencies": {
-    "@types/vscode": "^1.70.0",
-    "@types/node": "^18.0.0",
-    "typescript": "^4.8.0"
-  },
-  "dependencies": {
-    "openai": "^4.0.0"
+    "@types/node": "^18.19.0",
+    "@types/vscode": "^1.75.0",
+    "@vscode/vsce": "^3.2.0",
+    "typescript": "^5.4.0"
   }
 }
