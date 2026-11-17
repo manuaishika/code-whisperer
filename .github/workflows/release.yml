@@ -1,0 +1,34 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      VSCE_PAT: ${{ secrets.VSCE_PAT }}
+      OVSX_PAT: ${{ secrets.OVSX_PAT }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npx vsce package --no-dependencies -o code-whisperer-voice-${{ github.ref_name }}.vsix
+      - name: Attach to GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: '*.vsix'
+          generate_release_notes: true
+      # Publishing needs one-time setup: create a Marketplace publisher and an Open VSX namespace,
+      # then add VSCE_PAT and OVSX_PAT as repository secrets. Without them these steps are skipped.
+      - name: Publish to VS Code Marketplace
+        if: ${{ env.VSCE_PAT != '' }}
+        run: npx vsce publish --no-dependencies --packagePath *.vsix
+      - name: Publish to Open VSX
+        if: ${{ env.OVSX_PAT != '' }}
+        run: npx ovsx publish *.vsix -p "$OVSX_PAT"
